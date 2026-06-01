@@ -22,7 +22,7 @@ def mask_secret_env(env):
 
 
 @mcp.tool()
-def get_pods(namespace: str = "default"):
+def get_pods(namespace: str = "test"):
     """
     List all pods in namespace
     """
@@ -42,7 +42,7 @@ def get_pods(namespace: str = "default"):
 @mcp.tool()
 def get_pod_details(
     pod_name: str,
-    namespace: str = "default"
+    namespace: str = "test"
 ):
     """
     Get pod details + env variables
@@ -80,7 +80,7 @@ def get_pod_details(
 
 @mcp.tool()
 def get_deployments(
-    namespace: str = "default"
+    namespace: str = "test"
 ):
     """
     List deployments
@@ -102,7 +102,7 @@ def get_deployments(
 
 @mcp.tool()
 def get_events(
-    namespace: str = "default"
+    namespace: str = "test"
 ):
     """
     Get namespace events
@@ -130,7 +130,7 @@ def get_events(
 @mcp.tool()
 def get_logs(
     pod_name: str,
-    namespace: str = "default",
+    namespace: str = "test",
     tail_lines: int = 100
 ):
     """
@@ -154,7 +154,7 @@ def get_logs(
 def compare_pods(
     pod1: str,
     pod2: str,
-    namespace: str = "default"
+    namespace: str = "test"
 ):
     """
     Compare environment variables between pods
@@ -209,7 +209,7 @@ def compare_pods(
 
 @mcp.tool()
 def find_crashloops(
-    namespace: str = "default"
+    namespace: str = "test"
 ):
     """
     Find CrashLoopBackOff pods
@@ -242,7 +242,7 @@ def find_crashloops(
 @mcp.tool()
 def deployment_status(
     deployment_name: str,
-    namespace: str = "default"
+    namespace: str = "test"
 ):
     """
     Get deployment health
@@ -267,7 +267,7 @@ def deployment_status(
 @mcp.tool()
 def diagnose_pod(
     pod_name: str,
-    namespace: str = "default"
+    namespace: str = "test"
 ):
     """
     Diagnose pod status and events
@@ -303,7 +303,7 @@ def diagnose_pod(
 @mcp.tool()
 def analyze_crashloop(
     pod_name: str,
-    namespace: str = "default"
+    namespace: str = "test"
 ):
     """
     Analyze CrashLoopBackOff pod
@@ -353,7 +353,7 @@ def analyze_crashloop(
 def get_env_var(
     pod_name: str,
     env_name: str,
-    namespace: str = "default"
+    namespace: str = "test"
 ):
     """
     Get specific environment variable
@@ -391,7 +391,7 @@ def get_env_var(
 @mcp.tool()
 def diagnose_application(
     deployment_name: str,
-    namespace: str = "default"
+    namespace: str = "test"
 ):
     """
     Diagnose deployment, pods, events and logs.
@@ -527,6 +527,29 @@ def diagnose_application(
         return {
             "error": str(e)
         }
+
+@mcp.tool()
+def top_pods(
+    namespace: str = "test"
+):
+    """
+    Get top pods by CPU and memory usage
+    """
+
+    pods = core_v1.list_namespaced_pod(namespace)
+
+    result = []
+
+    for pod in pods.items:
+        pod_info = {
+            "name": pod.metadata.name,
+            "cpu": pod.status.container_statuses[0].resources.requests.cpu,
+            "memory": pod.status.container_statuses[0].resources.requests.memory
+        }
+        result.append(pod_info)
+
+    return result
+
 if __name__ == "__main__":
     mcp.run(
         transport="http",
