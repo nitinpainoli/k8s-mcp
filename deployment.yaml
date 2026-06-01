@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-mcp
+  namespace: mcp-system
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: k8s-mcp
+
+  template:
+    metadata:
+      labels:
+        app: k8s-mcp
+
+    spec:
+      serviceAccountName: k8s-mcp
+
+      containers:
+      - name: k8s-mcp
+        image: 891377290147.dkr.ecr.ap-southeast-1.amazonaws.com/devops-utilites:mcp3
