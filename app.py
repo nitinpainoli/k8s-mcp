@@ -9,6 +9,12 @@ config.load_incluster_config()
 
 core_v1 = client.CoreV1Api()
 apps_v1 = client.AppsV1Api()
+custom_api = client.CustomObjectsApi()
+
+# metrics.k8s.io — same data as `kubectl top pods`
+METRICS_GROUP = "metrics.k8s.io"
+METRICS_VERSION = "v1beta1"
+METRICS_PODS_PLURAL = "pods"
 
 
 def mask_secret_env(env):
@@ -528,27 +534,126 @@ def diagnose_application(
             "error": str(e)
         }
 
+
+def _parse_cpu_usage_to_cores(usage: str) -> float:
+    """
+    PodMetrics container usage.cpu is usually nanocores (e.g. '12345678n');
+    fall back to resource.Quantity parsing (e.g. '100m' cores).
+    """
+    if not usage:
+        return 0.0
+    s = str(usage).strip()
+    if s.endswith("n") and len(s) > 1:
+        body = s[:-1]
+        try:
+            return int(body) / 1_000_000_000.0
+        except ValueError:
+            pass
+    try:
+        from kubernetes.utils.quantity import parse_quantity
+
+        return float(parse_quantity(s))
+    except Exception:
+        return 0.0
+
+
+def _parse_memory_usage_to_bytes(usage: str) -> int:
+    if not usage:
+        return 0
+    try:
+        from kubernetes.utils.quantity import parse_quantity
+
+        return int(parse_quantity(str(usage).strip()))
+    except Exception:
+        return 0
+
+
+def _format_cpu_like_kubectl(cores: float) -> str:
+    """Similar to kubectl top: millicores with 'm' when under 1 core."""
+    if cores <= 0:
+        return "0"
+    millicores = cores * 1000.0
+    if millicores < 1000:
+        return f"{int(round(millicores))}m"
+    s = f"{cores:.3f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def _format_memory_like_kubectl(num_bytes: int) -> str:
+    """Binary Mi/Gi style like kubectl top pods."""
+    if num_bytes <= 0:
+        return "0"
+    gib = 1024**3
+    mib = 1024**2
+    kib = 1024
+    if num_bytes >= gib:
+        v = num_bytes / gib
+        return f"{int(round(v))}Gi" if v >= 10 else f"{v:.1f}Gi".replace(".0Gi", "Gi")
+    if num_bytes >= mib:
+        v = num_bytes / mib
+        return f"{int(round(v))}Mi" if v >= 10 else f"{v:.1f}Mi".replace(".0Mi", "Mi")
+    if num_bytes >= kib:
+        v = num_bytes / kib
+        return f"{int(round(v))}Ki" if v >= 10 else f"{v:.1f}Ki".replace(".0Ki", "Ki")
+    return str(int(num_bytes))
+
+
 @mcp.tool()
-def top_pods(
-    namespace: str = "test"
-):
+def top_pods(namespace: str = "test"):
     """
-    Get top pods by CPU and memory usage
+    Live CPU and memory usage per pod (same API as ``kubectl top pods``: metrics.k8s.io).
+
+    Requires metrics-server (or another implementation of the resource metrics API).
     """
+    try:
+        metrics = custom_api.list_namespaced_custom_object(
+            group=METRICS_GROUP,
+            version=METRICS_VERSION,
+            namespace=namespace,
+            plural=METRICS_PODS_PLURAL,
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return {
+                "error": "metrics.k8s.io not found — install or enable metrics-server",
+                "status": e.status,
+            }
+        return {"error": str(e), "status": getattr(e, "status", None)}
 
-    pods = core_v1.list_namespaced_pod(namespace)
+    items = metrics.get("items") or []
+    rows = []
+    for item in items:
+        meta = item.get("metadata") or {}
+        name = meta.get("name", "")
+        total_cpu = 0.0
+        total_mem = 0
+        containers_out = []
+        for c in item.get("containers") or []:
+            usage = c.get("usage") or {}
+            cpu_s = usage.get("cpu") or ""
+            mem_s = usage.get("memory") or ""
+            c_cores = _parse_cpu_usage_to_cores(cpu_s)
+            c_bytes = _parse_memory_usage_to_bytes(mem_s)
+            total_cpu += c_cores
+            total_mem += c_bytes
+            containers_out.append(
+                {
+                    "container": c.get("name", ""),
+                    "cpu": _format_cpu_like_kubectl(c_cores),
+                    "memory": _format_memory_like_kubectl(c_bytes),
+                }
+            )
+        rows.append(
+            {
+                "name": name,
+                "cpu": _format_cpu_like_kubectl(total_cpu),
+                "memory": _format_memory_like_kubectl(total_mem),
+                "containers": containers_out,
+            }
+        )
 
-    result = []
-
-    for pod in pods.items:
-        pod_info = {
-            "name": pod.metadata.name,
-            "cpu": pod.status.container_statuses[0].resources.requests.cpu,
-            "memory": pod.status.container_statuses[0].resources.requests.memory
-        }
-        result.append(pod_info)
-
-    return result
+    rows.sort(key=lambda r: r["name"])
+    return rows
 
 if __name__ == "__main__":
     mcp.run(

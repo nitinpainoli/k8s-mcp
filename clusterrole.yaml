@@ -27,3 +27,11 @@ rules:
     - get
     - list
     - watch
+
+# Same metrics as `kubectl top pods` (metrics-server)
+- apiGroups: ["metrics.k8s.io"]
+  resources:
+    - pods
+  verbs:
+    - get
+    - list
