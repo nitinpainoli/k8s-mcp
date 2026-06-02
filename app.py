@@ -39,6 +39,7 @@ def get_pods(namespace: str = "test"):
         {
             "name": pod.metadata.name,
             "phase": pod.status.phase,
+            "pod_ip": getattr(pod.status, "pod_ip", None),
             "node": pod.spec.node_name,
         }
         for pod in pods.items
@@ -62,6 +63,7 @@ def get_pod_details(
     result = {
         "pod": pod.metadata.name,
         "namespace": namespace,
+        "pod_ip": getattr(pod.status, "pod_ip", None),
         "node": pod.spec.node_name,
         "containers": []
     }
