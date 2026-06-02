@@ -1,0 +1,30 @@
+name: Python Syntax Check
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - feature/*
+  pull_request:
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python Syntax
+        run: |
+          find . -type f -name "*.py" \
+            ! -path "./.venv/*" \
+            ! -path "./venv/*" \
+            ! -path "./__pycache__/*" \
+            -exec python -m py_compile {} \;
