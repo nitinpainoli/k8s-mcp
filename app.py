@@ -307,7 +307,7 @@ def diagnose_pod(
         "phase": pod.status.phase,
         "node": pod.spec.node_name,
         "events": pod_events
-    } 
+    }
 @mcp.tool()
 def analyze_crashloop(
     pod_name: str,
@@ -656,7 +656,396 @@ def top_pods(namespace: str = "test"):
 
     rows.sort(key=lambda r: r["name"])
     return rows
+@mcp.tool()
+def get_deployment_live_logs(
+    deployment_name: str,
+    namespace: str = "test",
+    since_seconds: int = 300,
+    tail_lines: int = 500
+):
+    """
+    Fetch deployment logs from all pods and containers.
 
+    Use this tool whenever a user asks:
+    - show deployment logs
+    - show application logs
+    - show live logs
+    - recent logs
+    - troubleshoot deployment
+
+    Returns logs from all pods belonging to the deployment.
+    """
+
+    try:
+
+        deployment = apps_v1.read_namespaced_deployment(
+            deployment_name,
+            namespace
+        )
+
+        selector = deployment.spec.selector.match_labels
+
+        selector_string = ",".join(
+            [
+                f"{k}={v}"
+                for k, v in selector.items()
+            ]
+        )
+
+        pods = core_v1.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=selector_string
+        )
+
+        result = {
+            "deployment": deployment_name,
+            "namespace": namespace,
+            "since_seconds": since_seconds,
+            "pod_count": len(pods.items),
+            "pods": {}
+        }
+
+        for pod in pods.items:
+
+            pod_logs = {}
+
+            for container in pod.spec.containers:
+
+                try:
+
+                    logs = (
+                        core_v1.read_namespaced_pod_log(
+                            name=pod.metadata.name,
+                            namespace=namespace,
+                            container=container.name,
+                            since_seconds=since_seconds,
+                            tail_lines=tail_lines,
+                            timestamps=True
+                        )
+                    )
+
+                    pod_logs[container.name] = {
+                        "status": "success",
+                        "logs": logs
+                    }
+
+                except Exception as e:
+
+                    pod_logs[container.name] = {
+                        "status": "error",
+                        "error": str(e)
+                    }
+
+            result["pods"][
+                pod.metadata.name
+            ] = pod_logs
+
+        return result
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "deployment": deployment_name,
+            "namespace": namespace,
+            "error": str(e)
+        }
+@mcp.tool()
+def get_deployment_full_details(
+    deployment_name: str,
+    namespace: str = "test",
+    tail_lines: int = 100
+):
+    """
+    Complete deployment diagnostics.
+
+    Returns:
+    - Deployment health
+    - Resource Requests
+    - Resource Limits
+    - Live CPU Usage
+    - Live Memory Usage
+    - Pod status
+    - Restart count
+    - Events
+    - Logs
+    """
+
+    try:
+
+        deployment = apps_v1.read_namespaced_deployment(
+            deployment_name,
+            namespace
+        )
+
+        result = {
+            "deployment": deployment_name,
+            "namespace": namespace,
+            "deployment_status": {
+                "desired": deployment.spec.replicas,
+                "ready": deployment.status.ready_replicas or 0,
+                "available": deployment.status.available_replicas or 0,
+                "updated": deployment.status.updated_replicas or 0,
+                "healthy": (
+                    (deployment.status.available_replicas or 0)
+                    == deployment.spec.replicas
+                )
+            },
+            "containers": [],
+            "pods": []
+        }
+
+        #
+        # Deployment Resources
+        #
+        for container in deployment.spec.template.spec.containers:
+
+            result["containers"].append({
+                "container": container.name,
+                "image": container.image,
+                "requests": (
+                    container.resources.requests or {}
+                ),
+                "limits": (
+                    container.resources.limits or {}
+                )
+            })
+
+        #
+        # Find Deployment Pods
+        #
+        selector = (
+            deployment.spec.selector.match_labels
+        )
+
+        selector_string = ",".join(
+            [
+                f"{k}={v}"
+                for k, v in selector.items()
+            ]
+        )
+
+        pods = core_v1.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=selector_string
+        )
+
+        #
+        # Get Metrics
+        #
+        metrics_map = {}
+
+        try:
+
+            metrics = (
+                custom_api.list_namespaced_custom_object(
+                    group=METRICS_GROUP,
+                    version=METRICS_VERSION,
+                    namespace=namespace,
+                    plural=METRICS_PODS_PLURAL,
+                )
+            )
+
+            for item in metrics.get(
+                "items",
+                []
+            ):
+
+                pod_cpu = 0.0
+                pod_mem = 0
+
+                for c in item.get(
+                    "containers",
+                    []
+                ):
+
+                    usage = c.get(
+                        "usage",
+                        {}
+                    )
+
+                    pod_cpu += (
+                        _parse_cpu_usage_to_cores(
+                            usage.get(
+                                "cpu",
+                                ""
+                            )
+                        )
+                    )
+
+                    pod_mem += (
+                        _parse_memory_usage_to_bytes(
+                            usage.get(
+                                "memory",
+                                ""
+                            )
+                        )
+                    )
+
+                metrics_map[
+                    item["metadata"]["name"]
+                ] = {
+                    "cpu": (
+                        _format_cpu_like_kubectl(
+                            pod_cpu
+                        )
+                    ),
+                    "memory": (
+                        _format_memory_like_kubectl(
+                            pod_mem
+                        )
+                    )
+                }
+
+        except Exception as e:
+
+            metrics_map = {
+                "__error__": str(e)
+            }
+
+        #
+        # Get Events Once
+        #
+        all_events = (
+            core_v1.list_namespaced_event(
+                namespace
+            )
+        )
+
+        #
+        # Pod Details
+        #
+        for pod in pods.items:
+
+            pod_name = pod.metadata.name
+
+            pod_info = {
+                "pod": pod_name,
+                "phase": pod.status.phase,
+                "pod_ip": getattr(
+                    pod.status,
+                    "pod_ip",
+                    None
+                ),
+                "node": pod.spec.node_name,
+                "cpu": None,
+                "memory": None,
+                "containers": [],
+                "events": [],
+                "logs": ""
+            }
+
+            #
+            # Metrics
+            #
+            if pod_name in metrics_map:
+
+                pod_info["cpu"] = (
+                    metrics_map[pod_name]["cpu"]
+                )
+
+                pod_info["memory"] = (
+                    metrics_map[pod_name]["memory"]
+                )
+
+            #
+            # Container Status
+            #
+            for status in (
+                pod.status.container_statuses
+                or []
+            ):
+
+                container_data = {
+                    "container": status.name,
+                    "ready": status.ready,
+                    "restart_count": (
+                        status.restart_count
+                    ),
+                    "state": ""
+                }
+
+                if (
+                    status.state
+                    and status.state.running
+                ):
+                    container_data[
+                        "state"
+                    ] = "Running"
+
+                elif (
+                    status.state
+                    and status.state.waiting
+                ):
+                    container_data[
+                        "state"
+                    ] = (
+                        status.state.waiting.reason
+                    )
+
+                elif (
+                    status.state
+                    and status.state.terminated
+                ):
+                    container_data[
+                        "state"
+                    ] = (
+                        status.state.terminated.reason
+                    )
+
+                pod_info[
+                    "containers"
+                ].append(
+                    container_data
+                )
+
+            #
+            # Pod Events
+            #
+            for event in all_events.items:
+
+                if (
+                    event.involved_object
+                    and event.involved_object.name
+                    == pod_name
+                ):
+
+                    pod_info[
+                        "events"
+                    ].append({
+                        "type": event.type,
+                        "reason": event.reason,
+                        "message": event.message
+                    })
+
+            #
+            # Logs
+            #
+            try:
+
+                pod_info["logs"] = (
+                    core_v1.read_namespaced_pod_log(
+                        name=pod_name,
+                        namespace=namespace,
+                        tail_lines=tail_lines
+                    )
+                )
+
+            except Exception as e:
+
+                pod_info["logs"] = str(e)
+
+            result["pods"].append(
+                pod_info
+            )
+
+        return result
+
+    except Exception as e:
+
+        return {
+            "error": str(e)
+        }
 if __name__ == "__main__":
     mcp.run(
         transport="http",
